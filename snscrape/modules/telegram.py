@@ -5,7 +5,7 @@ import re
 import snscrape.base
 import typing
 import urllib.parse
-
+import base64
 
 logger = logging.getLogger(__name__)
 _SINGLE_MEDIA_LINK_PATTERN = re.compile(r'^https://t\.me/[^/]+/\d+\?single$')
@@ -25,6 +25,9 @@ class TelegramPost(typing.NamedTuple, snscrape.base.Item):
 	content: str
 	outlinks: list
 	outlinksss: str # deprecated, use outlinks instead
+	images: list
+	video: str
+	forwarded: str
 	linkPreview: typing.Optional[LinkPreview] = None
 
 	def __str__(self):
@@ -81,17 +84,38 @@ class TelegramChannelScraper(snscrape.base.Scraper):
 				self.logger.warning(f'Possibly incorrect URL: {rawUrl!r}')
 			url = rawUrl.replace('//t.me/', '//t.me/s/')
 			date = datetime.datetime.strptime(dateDiv.find('time', datetime = True)['datetime'].replace('-', '', 2).replace(':', ''), '%Y%m%dT%H%M%S%z')
+			images = []
+			video = None
+			forwarded = None
 			if (message := post.find('div', class_ = 'tgme_widget_message_text')):
-				content = message.text
+				content = message.get_text(separator="\n")
+
+				for video_tag in post.find_all('video'):
+					video = video_tag['src']	
+
+				if (forward_tag := post.find('a', class_ = 'tgme_widget_message_forwarded_from_name')):
+					forwarded = forward_tag['href'].split('t.me/')[1].split('/')[0]			
+
 				outlinks = []
 				for link in post.find_all('a'):
 					if any(x in link.parent.attrs.get('class', []) for x in ('tgme_widget_message_user', 'tgme_widget_message_author')):
 						# Author links at the top (avatar and name)
 						continue
 					if link['href'] == rawUrl or link['href'] == url:
+						style = link.attrs.get('style', '')
 						# Generic filter of links to the post itself, catches videos, photos, and the date link
-						continue
+						if style != '':
+							image = re.findall('url\(\'(.*?)\'\)', style)
+							if len(image) == 1:
+								images.append(image[0])
+							continue
 					if _SINGLE_MEDIA_LINK_PATTERN.match(link['href']):
+						style = link.attrs.get('style', '')
+						image = re.findall('url\(\'(.*?)\'\)', style)
+						if len(image) == 1:
+							images.append(image[0])
+							# resp = self._get(image[0])
+							# encoded_string = base64.b64encode(resp.content)
 						# Individual photo or video link
 						continue
 					href = urllib.parse.urljoin(pageUrl, link['href'])
@@ -101,7 +125,9 @@ class TelegramChannelScraper(snscrape.base.Scraper):
 			else:
 				content = None
 				outlinks = []
+				images = []
 				outlinksss = ''
+				video = None
 			linkPreview = None
 			if (linkPreviewA := post.find('a', class_ = 'tgme_widget_message_link_preview')):
 				kwargs = {}
@@ -118,7 +144,7 @@ class TelegramChannelScraper(snscrape.base.Scraper):
 					else:
 						self.logger.warning(f'Could not process link preview image on {url}')
 				linkPreview = LinkPreview(**kwargs)
-			yield TelegramPost(url = url, date = date, content = content, outlinks = outlinks, outlinksss = outlinksss, linkPreview = linkPreview)
+			yield TelegramPost(url = url, date = date, content = content, outlinks = outlinks, outlinksss = outlinksss, linkPreview = linkPreview, images = images, video = video, forwarded = forwarded)
 
 	def get_items(self):
 		r, soup = self._initial_page()
